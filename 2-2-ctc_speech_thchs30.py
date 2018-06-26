@@ -1,6 +1,4 @@
-
 # coding: utf-8
-
 
 import librosa, glob
 from os.path import join
@@ -9,14 +7,9 @@ import codecs
 import os
 from tqdm import tqdm
 import pandas as pd
-from keras.preprocessing.text import Tokenizer
-from keras.preprocessing.sequence import pad_sequences
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 import pickle
-from keras.callbacks import CSVLogger, ReduceLROnPlateau
-from keras.callbacks import EarlyStopping, ModelCheckpoint
-import keras.backend as K
 import argparse, platform
 from sklearn.metrics import accuracy_score
 import keras
@@ -26,7 +19,12 @@ import itertools
 import codecs
 import re
 import datetime
-from keras import backend as K
+
+import keras.backend as K
+from keras.preprocessing.text import Tokenizer
+from keras.preprocessing.sequence import pad_sequences
+from keras.callbacks import CSVLogger, ReduceLROnPlateau
+from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.layers.convolutional import Conv2D, MaxPooling2D, Conv1D
 from keras.layers import Input, Dense, Activation
 from keras.layers import Reshape, Lambda
@@ -36,13 +34,8 @@ from keras.layers.recurrent import GRU
 from keras.optimizers import SGD, Adam
 import keras.callbacks
 from keras.utils import multi_gpu_model
-
-
 from keras.layers.convolutional import Conv1D
 from keras.layers import BatchNormalization, Multiply, Add
-
-import pprint
-pp = pprint.PrettyPrinter(indent=1)
 
 np.random.seed(2018)
 
@@ -81,9 +74,6 @@ def get_text(text_files):
     return lines
 
 def get_pad_seq(textlines, maxlen=48):
-
-
-    
 
     # saving
     tok_path = join(path_base,'tokenizer.pickle')
@@ -243,12 +233,14 @@ class MetricCallback(keras.callbacks.Callback):
 
 if __name__ == '__main__':    
     
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1" #　选择使用的GPU
     path_base = '/data1/1806_speech-recognition/1806_data_speech-recognition/data_thchs30'
     path_data = join(path_base, 'data')
     
     K.set_learning_phase(1) #set learning phase
     
+    
+    # step 1：创建mfcc特征矩阵，如果已经存在，则直接读取，否则重新创建
     if not os.path.exists(join(path_base,'mfcc_vec_680x26'+'.npy')):
         wav_files = glob.glob(join(path_data ,'*.wav'))
         wav_files.sort()
@@ -259,6 +251,7 @@ if __name__ == '__main__':
         print('load from npy',mfcc_mat.shape)
 
     
+    # step 2: 读取语音对应的文本，如果已经存在，则直接读取，否则重新创建
     text_path = join(path_base, 'all_texts.txt')
     if not os.path.exists(text_path):
         text_files = glob.glob(join(path_data ,'*.wav.trn'))
@@ -276,24 +269,29 @@ if __name__ == '__main__':
                 text_lines.append(line.strip().replace(" ", ""))
         print('load from text file',len(text_lines))
     
-    
+    # step 3: 将文本转成与数字对应的映射关系，如果已经存在，则直接读取，否则重新创建
+    # 不建议每次重新生成，避免字符与数字的对应关系前后不符
     pad_lines, tok = get_pad_seq(text_lines, maxlen=48)
-    pad_lines.shape
     
-
+    # step 4：将训练的数据区分成训练集和测试集
     x_train, x_test, y_train, y_test = train_test_split(mfcc_mat, pad_lines, test_size=0.2)
+    
+    # step5：将mfcc特征矩阵归一化（加快训练速度）
     mmx = MinMaxScaler()
     train_shape = x_train.shape
     x_train = mmx.fit_transform(x_train.reshape(-1,1)).reshape(train_shape)
     test_shape = x_test.shape
     x_test = mmx.transform(x_test.reshape(-1,1)).reshape(test_shape)
     print(x_train.shape, x_test.shape, y_train.shape, y_test.shape)
-        
+    
+    # step6：获取模型的网络结构
     model, test_func = get_model2(img_w=680, img_h=26, output_size=2883 + 2, max_pred_len=48)
+    
+    # step7：将训练和测试数据转成符合ctc要求的格式
     x_train2, y_train2 = get_batch(x_train[:10640], y_train[:10640], max_pred_len=48, input_length=680)
-
     x_test2, y_test2 = get_batch(x_test[:500], y_test[:500], max_pred_len=48, input_length=680)
     
+    # step8：定义训练相关的callback函数
     idx2w = dict((i,w) for w,i in tok.word_index.items())
     max_key = max(idx2w.keys())
     idx2w[0] = ''
@@ -303,5 +301,7 @@ if __name__ == '__main__':
     checkpointer = keras.callbacks.ModelCheckpoint(join(path_base,"best_weights_680x26.h5"), verbose=1, save_best_only=False, save_weights_only=True, period=3)
     lr_change = ReduceLROnPlateau(monitor="loss", factor=0.5, patience=1, min_lr=0.000,epsilon=0.1,verbose=1)
     csv_to_log = CSVLogger(join(path_base, "logger_0621.csv"))
+    
+    # step9：开始训练
     model.fit(x=x_train2, y=y_train2, batch_size=80, epochs=1000, validation_data=(x_test2, y_test2),initial_epoch =200,callbacks=[csv_to_log,metric_cb_test,metric_cb_train,checkpointer,lr_change])
 
