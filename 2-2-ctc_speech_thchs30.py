@@ -2,9 +2,6 @@
 # coding: utf-8
 
 
-# 修改为test_func = K.function([input_tensor,K.learning_phase()], [y_pred])
-# 增加multi_gpu_model
-
 import librosa, glob
 from os.path import join
 import numpy as np
@@ -104,21 +101,16 @@ def get_pad_seq(textlines, maxlen=48):
     
     seq_lines =  tok.texts_to_sequences(text_lines[:])
     print('num of words,', len(tok.word_index.keys()))
-#     print(text_lines[1])
-#     print('/'.join(map(lambda x: str(x),seq_lines[1])))
-#     print(len(text_lines[1]))
 
     len_lines = pd.Series(map(lambda x: len(x), seq_lines))
     print('max_len',len_lines.max())
-#     len_lines.value_counts()[:5]
 
     def new_pad_seq(line, maxlen):
         return pad_sequences(line, maxlen=maxlen, padding='post', truncating='pre')
     
     lines = seq_lines[:]
     pad_lines = new_pad_seq(lines, maxlen)
-#     pad_lines.shape
-    return pad_lines, tok, # np.array(len_lines)
+    return pad_lines, tok
 
 
 def ctc_lambda_func(args):
@@ -143,11 +135,11 @@ def get_model2(img_w=32, img_h=20, output_size=None, max_pred_len=4):
         x_sigmoid=Conv1D(kernel_size=size,filters=dim,dilation_rate=rate,padding="same")(x)
         x_sigmoid=BatchNormalization(axis=-1)(x_sigmoid)
         x_sigmoid=Activation("sigmoid")(x_sigmoid)
-        out=Multiply()([x_tanh,x_sigmoid]) # ,mode="mul")
+        out=Multiply()([x_tanh,x_sigmoid]) 
         out=Conv1D(kernel_size=1,filters=dim,padding="same")(out)
         out=BatchNormalization(axis=-1)(out)
         out=Activation("tanh")(out)
-        x=Add()([x,out]) # ,mode="sum")
+        x=Add()([x,out]) 
         return x,out
 
     skip=[]
@@ -157,7 +149,7 @@ def get_model2(img_w=32, img_h=20, output_size=None, max_pred_len=4):
             skip.append(s)
 
 
-    skip_tensor=Add()([s for s in skip]) # ,mode="sum")
+    skip_tensor=Add()([s for s in skip]) 
     logit=Conv1D(kernel_size=1,filters=192,padding="same")(skip_tensor)
     logit=BatchNormalization(axis=-1)(logit)
     logit=Activation("tanh")(logit)
