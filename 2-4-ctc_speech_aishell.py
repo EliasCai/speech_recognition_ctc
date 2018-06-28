@@ -5,16 +5,17 @@
 from os.path import join
 import numpy as np
 import os
+import sys
+import itertools
+import shutil
+
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import accuracy_score
-import keras
-from keras.utils import to_categorical
-import sys
-from keras.callbacks import ModelCheckpoint
-import keras.backend as K
+from sklearn.externals import joblib
 
-import itertools
-from keras.callbacks import CSVLogger, ReduceLROnPlateau
+import keras
+import keras.backend as K
+from keras.callbacks import CSVLogger, ReduceLROnPlateau, TensorBoard
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.layers.convolutional import Conv1D
 from keras.layers import Input, Activation, Lambda
@@ -23,7 +24,7 @@ from keras.layers.recurrent import GRU
 from keras.optimizers import SGD, Adam
 from keras.utils import multi_gpu_model
 from keras.layers import BatchNormalization, Multiply, Add
-from utils import *
+from utils import get_wav_files, get_corpus, remove_blank_wav, get_batch
 
 
 np.random.seed(2018)
@@ -85,7 +86,7 @@ def get_model(img_w=32, img_h=20, output_size=None, max_pred_len=4,model_path='b
     model = Model(inputs=[input_tensor, labels, input_length, label_length], outputs=loss_out)
 
     # the loss calc occurs elsewhere, so use a dummy lambda func for the loss
-    model = multi_gpu_model(model, gpus=2)
+#    model = multi_gpu_model(model, gpus=2)
     model.compile(loss={'ctc': lambda y_true, y_pred: y_pred}, optimizer=opt)
     test_func = K.function([input_tensor,K.learning_phase()], [y_pred])
     if os.path.exists(model_path) :
@@ -109,6 +110,25 @@ def decode_batch(test_func, batch):
     return ret
 
     
+def get_mms(path, mms_batch):
+    
+    mms_path = join(path,'mms.pkl')
+    if os.path.exists(mms_path):
+        mms = joblib.load(mms_path) 
+        print('loading mms')
+    else:
+        mms = MinMaxScaler()
+        x, _ = next(mms_batch)
+        mms.fit(x['the_input'].reshape((-1.1)))
+        joblib.dump(mms, mms_path)
+        print('training mms')
+        
+    return mms
+    
+    
+    
+    
+
 class MetricCallback(keras.callbacks.Callback):
     
     def __init__(self, test_func, x, y, idx2w, num_test_words=18,info='this is test'):
@@ -140,31 +160,21 @@ class MetricCallback(keras.callbacks.Callback):
 if __name__ == '__main__':    
     
     path = 'data_aishell'
+    
+    K.set_learning_phase(1) #set learning phase
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1,2" #　选择使用的GPU
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1" #　选择使用的GPU
     
     train_wavs, val_wavs, test_wavs = get_wav_files(path)
-    
     name_to_seq, tok = get_corpus(path,maxlen=48)
     
-    print(len(train_wavs))
-    
-    train_wavs = remove_blank_wav(train_wavs, name_to_seq) 
-    print(len(train_wavs))
-    
+    train_wavs = remove_blank_wav(train_wavs, name_to_seq)     
     val_wavs = remove_blank_wav(val_wavs, name_to_seq) 
-    test_wavs = remove_blank_wav(test_wavs, name_to_seq) 
-    
-    wav_names = [os.path.basename(file).split('.')[0] for file in train_wavs]
-    text_name = list(name_to_seq.keys())
-    blank_wav = list(set(wav_names)- set(text_name))
-    
-    if  len(blank_wav) > 0:
-        print(blank_wav)
-        sys.exit(0)
-    
+    test_wavs = remove_blank_wav(test_wavs, name_to_seq)   
     
     model_path = join(path,"best_weights_778x26.h5")
+    log_path = join(path,'logs')
+    
     model, test_func = get_model(img_w=778, img_h=26, 
                                  output_size=len(tok.word_index) + 2, max_pred_len=48,
                                  model_path=model_path)
@@ -172,24 +182,44 @@ if __name__ == '__main__':
     print(len(train_wavs))
     print(len(name_to_seq))
     
-    train_batch = get_batch(train_wavs, name_to_seq,batch_size=180, max_pred_len=48, input_length=778)
-    val_batch = get_batch(val_wavs, name_to_seq,batch_size=16, max_pred_len=48, input_length=778)
-    ctc_x, ctc_y = next(train_batch)
-    # batch_x2, batch_y2 = next(val_batch)
     
-    print(len(ctc_x),len(ctc_y))
+    mms_batch = get_batch(train_wavs[:], name_to_seq,
+                          batch_size=1000, max_pred_len=48, input_length=778, 
+                          mms=None)
+    
+    mms = get_mms(path, mms_batch)
+    
+    train_batch = get_batch(train_wavs[:2000], name_to_seq,
+                            batch_size=64, max_pred_len=48, input_length=778, 
+                            mms=mms)
+    
+    val_batch = get_batch(val_wavs, name_to_seq,
+                          batch_size=16, max_pred_len=48, input_length=778, 
+                          mms=mms)
+    
+    ctc_x, ctc_y = next(train_batch)
+    
     for name, value in ctc_x.items():
         print(name, value.shape)
-    
-    # print(ctc_x['label_length'][:5])
-    
+        
     for name, value in ctc_y.items():
         print(name, value.shape)  
     
-    checkpointer = ModelCheckpoint(model_path, verbose=1, save_best_only=False, save_weights_only=True, period=1)
+    checkpointer = ModelCheckpoint(model_path, verbose=1, 
+                                   save_best_only=False, 
+                                   save_weights_only=True, period=1)
     csv_to_log = CSVLogger(join(path, "logger_0627.csv"))
+    lr_change = ReduceLROnPlateau(monitor="loss", factor=0.5, 
+                                  patience=1, min_lr=0.000,
+                                  epsilon=0.1,verbose=1)
+    tfboard = TensorBoard(log_dir=log_path)
     
-    model.fit_generator(train_batch,steps_per_epoch=100, epochs=100, 
-                        callbacks=[checkpointer, csv_to_log], 
-                        workers=2, max_queue_size=1000)    
+    if os.path.exists(log_path):
+        shutil.rmtree(log_path)
+    
+    callback_list = [checkpointer, tfboard, lr_change]
+    history = model.fit_generator(train_batch,
+                                  steps_per_epoch=40, epochs=100,
+                                  callbacks=callback_list,
+                                  workers=2, max_queue_size=256)    
 
